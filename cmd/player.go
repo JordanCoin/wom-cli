@@ -94,12 +94,15 @@ var playerLookupCmd = &cobra.Command{
 }
 
 var playerGainsCmd = &cobra.Command{
-	Use:     "gains [username]",
-	Short:   "Show XP gains for a player",
-	Args:    cobra.ExactArgs(1),
-	Example: `  wom player gains Zezima --period week`,
+	Use:   "gains [username]",
+	Short: "Show XP and boss KC gains for a player",
+	Args:  cobra.ExactArgs(1),
+	Example: `  wom player gains Zezima --period week
+  wom player gains 'Doe Matic' --period week --metric vorkath
+  wom player gains 'Doe Matic' --metric ranged`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		period, _ := cmd.Flags().GetString("period")
+		metric, _ := cmd.Flags().GetString("metric")
 		client := api.NewClient()
 		data, err := client.GetPlayerGains(args[0], period)
 		if err != nil {
@@ -115,75 +118,152 @@ var playerGainsCmd = &cobra.Command{
 
 		fmt.Printf("Gains for %s (%s):\n", args[0], period)
 		if gainsData, ok := data["data"].(map[string]interface{}); ok {
-			// Skill XP gains
-			if skills, ok := gainsData["skills"].(map[string]interface{}); ok {
-				type skillGain struct {
-					name string
-					xp   float64
+			// Normalize metric for matching (lowercase, underscores)
+			metricNorm := strings.ToLower(strings.ReplaceAll(metric, " ", "_"))
+
+			showSkills := metric == "" // show all if no filter
+			showBosses := metric == ""
+
+			// Check if metric matches a specific skill or boss
+			if metric != "" {
+				if skills, ok := gainsData["skills"].(map[string]interface{}); ok {
+					if _, ok := skills[metricNorm]; ok {
+						showSkills = true
+					}
 				}
-				var gains []skillGain
-				for name, v := range skills {
-					if skill, ok := v.(map[string]interface{}); ok {
-						if gained, ok := skill["experience"].(map[string]interface{}); ok {
-							if xp, ok := gained["gained"].(float64); ok && xp > 0 {
-								gains = append(gains, skillGain{name, xp})
+				if bosses, ok := gainsData["bosses"].(map[string]interface{}); ok {
+					if _, ok := bosses[metricNorm]; ok {
+						showBosses = true
+					}
+				}
+				// If metric didn't match anything, show both and let it filter below
+				if !showSkills && !showBosses {
+					showSkills = true
+					showBosses = true
+				}
+			}
+
+			// Skill XP gains
+			if showSkills {
+				if skills, ok := gainsData["skills"].(map[string]interface{}); ok {
+					type skillGain struct {
+						name string
+						xp   float64
+					}
+					var gains []skillGain
+					for name, v := range skills {
+						if metric != "" && name != metricNorm {
+							continue
+						}
+						if skill, ok := v.(map[string]interface{}); ok {
+							if gained, ok := skill["experience"].(map[string]interface{}); ok {
+								if xp, ok := gained["gained"].(float64); ok && xp > 0 {
+									gains = append(gains, skillGain{name, xp})
+								}
 							}
 						}
 					}
-				}
-				for i := 0; i < len(gains); i++ {
-					for j := i + 1; j < len(gains); j++ {
-						if gains[j].xp > gains[i].xp {
-							gains[i], gains[j] = gains[j], gains[i]
+					for i := 0; i < len(gains); i++ {
+						for j := i + 1; j < len(gains); j++ {
+							if gains[j].xp > gains[i].xp {
+								gains[i], gains[j] = gains[j], gains[i]
+							}
 						}
 					}
-				}
-				if len(gains) > 0 {
-					fmt.Println("\nSkill XP Gains:")
-					for i, g := range gains {
-						if i >= 10 {
-							break
+					if len(gains) > 0 {
+						fmt.Println("\nSkill XP Gains:")
+						for i, g := range gains {
+							if i >= 10 && metric == "" {
+								break
+							}
+							fmt.Printf("  %s: +%s XP\n", g.name, formatNumber(g.xp))
 						}
-						fmt.Printf("  %s: +%s XP\n", g.name, formatNumber(g.xp))
 					}
 				}
 			}
 
 			// Boss KC gains
-			if bosses, ok := gainsData["bosses"].(map[string]interface{}); ok {
-				type bossGain struct {
-					name  string
-					kills float64
-				}
-				var bossGains []bossGain
-				for name, v := range bosses {
-					if b, ok := v.(map[string]interface{}); ok {
-						if killData, ok := b["kills"].(map[string]interface{}); ok {
-							if gained, ok := killData["gained"].(float64); ok && gained > 0 {
-								bossGains = append(bossGains, bossGain{name, gained})
+			if showBosses {
+				if bosses, ok := gainsData["bosses"].(map[string]interface{}); ok {
+					type bossGain struct {
+						name  string
+						kills float64
+					}
+					var bossGains []bossGain
+					for name, v := range bosses {
+						if metric != "" && name != metricNorm {
+							continue
+						}
+						if b, ok := v.(map[string]interface{}); ok {
+							if killData, ok := b["kills"].(map[string]interface{}); ok {
+								if gained, ok := killData["gained"].(float64); ok && gained > 0 {
+									bossGains = append(bossGains, bossGain{name, gained})
+								}
 							}
 						}
 					}
-				}
-				for i := 0; i < len(bossGains); i++ {
-					for j := i + 1; j < len(bossGains); j++ {
-						if bossGains[j].kills > bossGains[i].kills {
-							bossGains[i], bossGains[j] = bossGains[j], bossGains[i]
+					for i := 0; i < len(bossGains); i++ {
+						for j := i + 1; j < len(bossGains); j++ {
+							if bossGains[j].kills > bossGains[i].kills {
+								bossGains[i], bossGains[j] = bossGains[j], bossGains[i]
+							}
 						}
 					}
-				}
-				if len(bossGains) > 0 {
-					fmt.Println("\nBoss KC Gains:")
-					for i, b := range bossGains {
-						if i >= 10 {
-							break
+					if len(bossGains) > 0 {
+						fmt.Println("\nBoss KC Gains:")
+						for i, b := range bossGains {
+							if i >= 10 && metric == "" {
+								break
+							}
+							fmt.Printf("  %s: +%.0f KC\n", formatBossName(b.name), b.kills)
 						}
-						fmt.Printf("  %s: +%.0f KC\n", formatBossName(b.name), b.kills)
 					}
 				}
 			}
 
-			if gainsData["skills"] == nil && gainsData["bosses"] == nil {
+			// If filtering by metric and nothing was printed, show explicit zero
+			if metric != "" {
+				foundMatch := false
+				if skills, ok := gainsData["skills"].(map[string]interface{}); ok {
+					if _, ok := skills[metricNorm]; ok {
+						foundMatch = true
+					}
+				}
+				if bosses, ok := gainsData["bosses"].(map[string]interface{}); ok {
+					if _, ok := bosses[metricNorm]; ok {
+						foundMatch = true
+					}
+				}
+				if foundMatch {
+					// Metric exists in API but 0 gains — show explicit zero
+					// (output was already printed if gains > 0)
+					// Check if we already printed something by looking at bosses/skills
+					printed := false
+					if skills, ok := gainsData["skills"].(map[string]interface{}); ok {
+						if s, ok := skills[metricNorm].(map[string]interface{}); ok {
+							if exp, ok := s["experience"].(map[string]interface{}); ok {
+								if gained, ok := exp["gained"].(float64); ok && gained > 0 {
+									printed = true
+								}
+							}
+						}
+					}
+					if bosses, ok := gainsData["bosses"].(map[string]interface{}); ok {
+						if b, ok := bosses[metricNorm].(map[string]interface{}); ok {
+							if kills, ok := b["kills"].(map[string]interface{}); ok {
+								if gained, ok := kills["gained"].(float64); ok && gained > 0 {
+									printed = true
+								}
+							}
+						}
+					}
+					if !printed {
+						fmt.Printf("\n  %s: 0 gains this %s\n", formatBossName(metricNorm), period)
+					}
+				} else {
+					fmt.Printf("\n  Unknown metric '%s'. Use skill names (ranged, slayer) or boss names (vorkath, zulrah).\n", metric)
+				}
+			} else if gainsData["skills"] == nil && gainsData["bosses"] == nil {
 				fmt.Println("  No gains this period.")
 			}
 		}
@@ -277,6 +357,7 @@ var playerAchievementsCmd = &cobra.Command{
 
 func init() {
 	playerGainsCmd.Flags().String("period", "week", "Time period: day, week, month, year")
+	playerGainsCmd.Flags().String("metric", "", "Filter to specific skill or boss (e.g., vorkath, ranged)")
 	playerSearchCmd.Flags().Int("limit", 10, "Max results")
 
 	playerCmd.AddCommand(playerLookupCmd)
