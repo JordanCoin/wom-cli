@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/JordanCoin/wom-cli/internal/api"
@@ -94,26 +95,53 @@ var groupLeaderboardCmd = &cobra.Command{
 }
 
 var groupHiscoresCmd = &cobra.Command{
-	Use:     "hiscores [group_id]",
-	Short:   "Show group hiscores for a metric",
-	Args:    cobra.ExactArgs(1),
-	Example: `  wom group hiscores 5165 --metric overall --top 10`,
+	Use:   "hiscores [group_id]",
+	Short: "Show group hiscores for a metric",
+	Args:  cobra.ExactArgs(1),
+	Example: `  wom group hiscores 5165 --metric overall --top 10
+  wom group hiscores 5165 --metric overall --sort-by level --top 20`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		metric, _ := cmd.Flags().GetString("metric")
 		top, _ := cmd.Flags().GetInt("top")
+		sortBy, _ := cmd.Flags().GetString("sort-by")
+
+		// When sorting by level, fetch more results to re-sort client-side
+		fetchLimit := top
+		if sortBy == "level" {
+			fetchLimit = 200
+		}
 
 		client := api.NewClient()
-		results, err := client.GetGroupHiscores(args[0], metric, top)
+		results, err := client.GetGroupHiscores(args[0], metric, fetchLimit)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(1)
 		}
+
+		// Re-sort by level if requested (API only sorts by XP)
+		if sortBy == "level" {
+			sort.SliceStable(results, func(i, j int) bool {
+				li := getDataField(results[i], "level")
+				lj := getDataField(results[j], "level")
+				return li > lj // descending
+			})
+			// Trim to requested count
+			if len(results) > top {
+				results = results[:top]
+			}
+		}
+
 		if jsonOutput {
 			out, _ := json.MarshalIndent(results, "", "  ")
 			fmt.Println(string(out))
 			return nil
 		}
-		fmt.Printf("Hiscores for %s:\n", metric)
+
+		label := metric
+		if sortBy == "level" {
+			label = metric + " (by level)"
+		}
+		fmt.Printf("Hiscores for %s:\n", label)
 		for i, r := range results {
 			if entry, ok := r.(map[string]interface{}); ok {
 				player, _ := entry["player"].(map[string]interface{})
@@ -123,9 +151,17 @@ var groupHiscoresCmd = &cobra.Command{
 				}
 				data, _ := entry["data"].(map[string]interface{})
 				var value float64
+				var suffix string
 				if data != nil {
-					// Could be experience, kills, score depending on metric
-					if exp, ok := data["experience"].(float64); ok {
+					if sortBy == "level" {
+						if lvl, ok := data["level"].(float64); ok {
+							value = lvl
+							suffix = fmt.Sprintf(" (%.0f away from max)", 2376-lvl)
+							if lvl >= 2376 {
+								suffix = " (maxed)"
+							}
+						}
+					} else if exp, ok := data["experience"].(float64); ok {
 						value = exp
 					} else if kills, ok := data["kills"].(float64); ok {
 						value = kills
@@ -135,11 +171,27 @@ var groupHiscoresCmd = &cobra.Command{
 						value = level
 					}
 				}
-				fmt.Printf("  %d. %s — %s\n", i+1, name, formatNumber(value))
+				if sortBy == "level" {
+					fmt.Printf("  %d. %s — Level %.0f%s\n", i+1, name, value, suffix)
+				} else {
+					fmt.Printf("  %d. %s — %s\n", i+1, name, formatNumber(value))
+				}
 			}
 		}
 		return nil
 	},
+}
+
+// getDataField extracts a numeric field from a hiscores entry's data object.
+func getDataField(entry interface{}, field string) float64 {
+	if e, ok := entry.(map[string]interface{}); ok {
+		if data, ok := e["data"].(map[string]interface{}); ok {
+			if val, ok := data[field].(float64); ok {
+				return val
+			}
+		}
+	}
+	return 0
 }
 
 var groupMembersCmd = &cobra.Command{
@@ -217,6 +269,7 @@ func init() {
 
 	groupHiscoresCmd.Flags().String("metric", "overall", "Metric: overall, attack, slayer, etc.")
 	groupHiscoresCmd.Flags().Int("top", 10, "Number of results")
+	groupHiscoresCmd.Flags().String("sort-by", "experience", "Sort by: experience (default) or level")
 
 	groupCmd.AddCommand(groupInfoCmd)
 	groupCmd.AddCommand(groupLeaderboardCmd)

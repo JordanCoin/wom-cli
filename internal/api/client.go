@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -116,7 +117,11 @@ func (c *Client) CreateCompetition(title, metric, startsAt, endsAt string, parti
 		body["participants"] = participants
 	}
 	if groupID != "" {
-		body["groupId"] = groupID
+		groupIDNum, err := strconv.ParseInt(groupID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid group ID %q: %s", groupID, err)
+		}
+		body["groupId"] = groupIDNum
 		body["groupVerificationCode"] = groupVerificationCode
 	}
 	return c.postMap("/competitions", body)
