@@ -18,13 +18,33 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build binary
+      - name: Build binaries
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${TAG_NAME}" -o wom-linux-amd64 .
+          set -eu
+          # Asset names are load-bearing. community-os installs skills by
+          # globbing `wom-{goos}-{goarch}` off the latest release, so these
+          # names must not change — `wom-linux-amd64` especially.
+          # Pure Go + CGO_ENABLED=0, so every target cross-compiles on this
+          # one runner; a job-per-target matrix would only add runner minutes
+          # and a race between parallel release uploads.
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            echo "==> wom-${goos}-${goarch}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -ldflags="-s -w -X main.version=${TAG_NAME}" \
+              -o "wom-${goos}-${goarch}" .
+          done
+          ls -l wom-linux-amd64 wom-linux-arm64 wom-darwin-amd64 wom-darwin-arm64
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: wom-linux-amd64
+          fail_on_unmatched_files: true
+          files: |
+            wom-linux-amd64
+            wom-linux-arm64
+            wom-darwin-amd64
+            wom-darwin-arm64
