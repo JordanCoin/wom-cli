@@ -76,6 +76,22 @@ wom competition create \
   --group-id 5165 \
   --verification-code "123-456-789"
 
+# Create a TEAM competition (the shape a clan bingo uses)
+# Repeat --team for each side. Every participation then carries teamName,
+# so standings can be summed per team without a separate roster mapping.
+wom competition create \
+  --title "Summer Bingo" \
+  --metric ehb \
+  --starts "2026-06-13T00:00:00Z" \
+  --ends "2026-06-27T00:00:00Z" \
+  --group-id 5165 \
+  --verification-code "123-456-789" \
+  --team "Team Alpha=Doe Matic,Uka36" \
+  --team "Team Bravo=pollieolly,Zezima"
+
+# --participants and --team are alternatives, never both: passing both is
+# refused before the request, because WOM rejects it too.
+
 # View standings
 wom competition view 12345
 
