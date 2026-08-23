@@ -21,13 +21,15 @@ var competitionCreateCmd = &cobra.Command{
 	Long: `Create a competition on WiseOldMan. Can be standalone (with participants list)
 or group-based (with group ID + verification code).`,
 	Example: `  wom competition create --title "RC SOTW" --metric runecrafting --starts "2026-03-20T00:00:00Z" --ends "2026-03-27T00:00:00Z" --participants "Zezima,Lynx Titan"
-  wom competition create --title "PVM BOTW" --metric vorkath --starts "2026-03-20T00:00:00Z" --ends "2026-03-27T00:00:00Z" --group-id 5165 --verification-code "123-456-789"`,
+  wom competition create --title "PVM BOTW" --metric vorkath --starts "2026-03-20T00:00:00Z" --ends "2026-03-27T00:00:00Z" --group-id 5165 --verification-code "123-456-789"
+  wom competition create --title "Summer Bingo" --metric ehb --starts "2026-06-13T00:00:00Z" --ends "2026-06-27T00:00:00Z" --group-id 5165 --verification-code "123-456-789" --team "Team Alpha=Doe Matic,Uka36" --team "Team Bravo=Zezima"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		title, _ := cmd.Flags().GetString("title")
 		metric, _ := cmd.Flags().GetString("metric")
 		starts, _ := cmd.Flags().GetString("starts")
 		ends, _ := cmd.Flags().GetString("ends")
 		participantsStr, _ := cmd.Flags().GetString("participants")
+		teamSpecs, _ := cmd.Flags().GetStringArray("team")
 		groupID, _ := cmd.Flags().GetString("group-id")
 		verificationCode, _ := cmd.Flags().GetString("verification-code")
 
@@ -43,8 +45,13 @@ or group-based (with group ID + verification code).`,
 			}
 		}
 
+		teams, err := parseTeams(teamSpecs)
+		if err != nil {
+			return err
+		}
+
 		client := api.NewClient()
-		data, err := client.CreateCompetition(title, metric, starts, ends, participants, groupID, verificationCode)
+		data, err := client.CreateCompetition(title, metric, starts, ends, participants, teams, groupID, verificationCode)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(1)
@@ -295,7 +302,8 @@ func init() {
 	competitionCreateCmd.Flags().String("metric", "", "Metric: runecrafting, vorkath, overall, etc. (required)")
 	competitionCreateCmd.Flags().String("starts", "", "Start time ISO 8601 (required)")
 	competitionCreateCmd.Flags().String("ends", "", "End time ISO 8601 (required)")
-	competitionCreateCmd.Flags().String("participants", "", "Comma-separated participant usernames")
+	competitionCreateCmd.Flags().String("participants", "", "Comma-separated participant usernames (classic competition)")
+	competitionCreateCmd.Flags().StringArray("team", nil, "A team, as 'Name=player1,player2'. Repeat for each team. Makes it a team competition, so it cannot be combined with --participants")
 	competitionCreateCmd.Flags().String("group-id", "", "Group ID (for group competitions)")
 	competitionCreateCmd.Flags().String("verification-code", "", "Group verification code (for group competitions)")
 
@@ -323,4 +331,54 @@ func init() {
 	competitionCmd.AddCommand(competitionDeleteCmd)
 
 	rootCmd.AddCommand(competitionCmd)
+}
+
+// parseTeams turns repeated `--team "Name=player1,player2"` flags into the
+// shape the API client wants.
+//
+// `=` splits the name from the roster and `,` splits the roster, which is
+// unambiguous because an OSRS name is at most 12 characters of letters, digits,
+// spaces and underscores: it can never contain either separator. Splitting the
+// name on the FIRST `=` rather than the last leaves a team free to have one in
+// its name, which is likelier than a player having one.
+func parseTeams(specs []string) ([]api.TeamSpec, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+
+	teams := make([]api.TeamSpec, 0, len(specs))
+	seen := make(map[string]bool, len(specs))
+
+	for _, spec := range specs {
+		name, roster, found := strings.Cut(spec, "=")
+		if !found {
+			return nil, fmt.Errorf("--team %q is missing its players: write it as 'Name=player1,player2'", spec)
+		}
+
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("--team %q has no team name before the '='", spec)
+		}
+
+		// WOM keys a team by its name, so two teams sharing one would silently
+		// become a single team with a merged roster.
+		if seen[strings.ToLower(name)] {
+			return nil, fmt.Errorf("--team %q is named twice", name)
+		}
+		seen[strings.ToLower(name)] = true
+
+		players := make([]string, 0, 4)
+		for _, p := range strings.Split(roster, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				players = append(players, p)
+			}
+		}
+		if len(players) == 0 {
+			return nil, fmt.Errorf("--team %q lists no players", name)
+		}
+
+		teams = append(teams, api.TeamSpec{Name: name, Participants: players})
+	}
+
+	return teams, nil
 }

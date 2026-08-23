@@ -106,16 +106,52 @@ func (c *Client) GetGroupMembers(groupID string) ([]interface{}, error) {
 // ── Competitions ─────────────────────────────────────────────────────
 
 // CreateCompetition creates a new competition.
-func (c *Client) CreateCompetition(title, metric, startsAt, endsAt string, participants []string, groupID string, groupVerificationCode string) (map[string]interface{}, error) {
+// TeamSpec is one side of a team competition: a name and the players on it.
+type TeamSpec struct {
+	Name         string
+	Participants []string
+}
+
+// buildCompetitionBody is the POST /competitions payload, built without any I/O
+// so it can be tested on its own.
+//
+// WOM treats `participants` and `teams` as alternatives, not as a pair: sending
+// both is rejected, and sending neither creates a competition nobody is in. The
+// choice between them is what makes a competition classic or team, so it is
+// checked here rather than left to the API to refuse after the fact.
+func buildCompetitionBody(title, metric, startsAt, endsAt string, participants []string, teams []TeamSpec, groupID, groupVerificationCode string) (map[string]interface{}, error) {
+	if len(participants) > 0 && len(teams) > 0 {
+		return nil, fmt.Errorf("a competition is either classic or team: pass --participants or --team, not both")
+	}
+
 	body := map[string]interface{}{
 		"title":    title,
 		"metric":   metric,
 		"startsAt": startsAt,
 		"endsAt":   endsAt,
 	}
+
 	if len(participants) > 0 {
 		body["participants"] = participants
 	}
+
+	if len(teams) > 0 {
+		encoded := make([]map[string]interface{}, 0, len(teams))
+		for _, t := range teams {
+			if t.Name == "" {
+				return nil, fmt.Errorf("every team needs a name")
+			}
+			if len(t.Participants) == 0 {
+				return nil, fmt.Errorf("team %q has no players", t.Name)
+			}
+			encoded = append(encoded, map[string]interface{}{
+				"name":         t.Name,
+				"participants": t.Participants,
+			})
+		}
+		body["teams"] = encoded
+	}
+
 	if groupID != "" {
 		groupIDNum, err := strconv.ParseInt(groupID, 10, 64)
 		if err != nil {
@@ -123,6 +159,19 @@ func (c *Client) CreateCompetition(title, metric, startsAt, endsAt string, parti
 		}
 		body["groupId"] = groupIDNum
 		body["groupVerificationCode"] = groupVerificationCode
+	}
+
+	return body, nil
+}
+
+// CreateCompetition creates a classic competition (participants) or a team
+// competition (teams). A group id plus verification code attaches it to the
+// group, which is what puts it on the group's page; without them it exists but
+// is only reachable by its own id.
+func (c *Client) CreateCompetition(title, metric, startsAt, endsAt string, participants []string, teams []TeamSpec, groupID string, groupVerificationCode string) (map[string]interface{}, error) {
+	body, err := buildCompetitionBody(title, metric, startsAt, endsAt, participants, teams, groupID, groupVerificationCode)
+	if err != nil {
+		return nil, err
 	}
 	return c.postMap("/competitions", body)
 }
