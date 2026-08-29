@@ -109,6 +109,33 @@ wom competition update-all 12345 --verification-code "123-456-789"
 wom competition delete 12345 --verification-code "123-456-789"
 ```
 
+### Keeping the verification code out of argv
+
+A group's verification code authorises editing and deleting every competition
+the group owns, and it does not rotate on its own. Every command above takes it
+from `$WOM_VERIFICATION_CODE` when `--verification-code` is absent, so a script
+or an agent never has to put it on a command line, where it would land in `ps`,
+in shell history, and in whatever log the caller keeps of the commands it ran.
+`--group-id` falls back to `$WOM_GROUP_ID` the same way; that one is not a
+secret, it is only tedious to repeat.
+
+An explicit flag always beats the environment, so a single invocation can still
+override an ambient default.
+
+```bash
+export WOM_GROUP_ID=5165
+export WOM_VERIFICATION_CODE="123-456-789"
+
+wom competition create --title "Summer Bingo" --metric ehb \
+  --starts "2026-09-25T00:00:00Z" --ends "2026-10-04T00:00:00Z" \
+  --team "Team Alpha=Doe Matic,Uka36" --json
+```
+
+A supplied code is never echoed back, on either the human or the `--json` path:
+you already have it, and printing it would only copy it somewhere new. The one
+code that *is* printed is the one a standalone competition mints for itself,
+because that output is the only place it ever appears.
+
 ## JSON Output
 
 Add `--json` to any command for structured output:
