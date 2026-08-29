@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -19,7 +20,16 @@ var competitionCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new competition",
 	Long: `Create a competition on WiseOldMan. Can be standalone (with participants list)
-or group-based (with group ID + verification code).`,
+or group-based (with group ID + verification code).
+
+The group ID and the verification code both fall back to $WOM_GROUP_ID and
+$WOM_VERIFICATION_CODE when their flags are absent, so a caller never has to
+put the group's secret in argv.
+
+A standalone competition mints its own verification code, and this command's
+output is the only place it is ever shown, so that one is printed. A code you
+supplied is never echoed back: you already have it, and printing it would copy
+a long-lived group secret into stdout.`,
 	Example: `  wom competition create --title "RC SOTW" --metric runecrafting --starts "2026-03-20T00:00:00Z" --ends "2026-03-27T00:00:00Z" --participants "Zezima,Lynx Titan"
   wom competition create --title "PVM BOTW" --metric vorkath --starts "2026-03-20T00:00:00Z" --ends "2026-03-27T00:00:00Z" --group-id 5165 --verification-code "123-456-789"
   wom competition create --title "Summer Bingo" --metric ehb --starts "2026-06-13T00:00:00Z" --ends "2026-06-27T00:00:00Z" --group-id 5165 --verification-code "123-456-789" --team "Team Alpha=Doe Matic,Uka36" --team "Team Bravo=Zezima"`,
@@ -30,8 +40,10 @@ or group-based (with group ID + verification code).`,
 		ends, _ := cmd.Flags().GetString("ends")
 		participantsStr, _ := cmd.Flags().GetString("participants")
 		teamSpecs, _ := cmd.Flags().GetStringArray("team")
-		groupID, _ := cmd.Flags().GetString("group-id")
-		verificationCode, _ := cmd.Flags().GetString("verification-code")
+		groupIDFlag, _ := cmd.Flags().GetString("group-id")
+		verificationCodeFlag, _ := cmd.Flags().GetString("verification-code")
+		groupID := resolveSecret(groupIDFlag, envGroupID)
+		verificationCode := resolveSecret(verificationCodeFlag, envVerificationCode)
 
 		if title == "" || metric == "" || starts == "" || ends == "" {
 			return fmt.Errorf("--title, --metric, --starts, and --ends are required")
@@ -57,23 +69,7 @@ or group-based (with group ID + verification code).`,
 			os.Exit(1)
 		}
 
-		if jsonOutput {
-			out, _ := json.MarshalIndent(data, "", "  ")
-			fmt.Println(string(out))
-			return nil
-		}
-
-		if comp, ok := data["competition"].(map[string]interface{}); ok {
-			id, _ := comp["id"].(float64)
-			fmt.Printf("Competition '%s' created! (ID: %.0f)\n", title, id)
-			fmt.Printf("Metric: %s\n", metric)
-			fmt.Printf("Starts: %s\n", starts)
-			fmt.Printf("Ends: %s\n", ends)
-		}
-		if code, ok := data["verificationCode"].(string); ok {
-			fmt.Printf("Verification code: %s (save this — needed to edit/delete)\n", code)
-		}
-		return nil
+		return renderCreateOutput(cmd.OutOrStdout(), data, title, metric, starts, ends, verificationCode, jsonOutput)
 	},
 }
 
@@ -136,9 +132,10 @@ var competitionDeleteCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Example: `  wom competition delete 12345 --verification-code "123-456-789"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		code, _ := cmd.Flags().GetString("verification-code")
+		codeFlag, _ := cmd.Flags().GetString("verification-code")
+		code := resolveSecret(codeFlag, envVerificationCode)
 		if code == "" {
-			return fmt.Errorf("--verification-code is required to delete a competition")
+			return missingCodeError()
 		}
 
 		client := api.NewClient()
@@ -165,9 +162,10 @@ var competitionEditCmd = &cobra.Command{
 	Example: `  wom competition edit 12345 --title "RC SOTW Week 2" --verification-code "123-456-789"
   wom competition edit 12345 --ends "2026-03-30T00:00:00Z" --verification-code "123-456-789"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		code, _ := cmd.Flags().GetString("verification-code")
+		codeFlag, _ := cmd.Flags().GetString("verification-code")
+		code := resolveSecret(codeFlag, envVerificationCode)
 		if code == "" {
-			return fmt.Errorf("--verification-code is required")
+			return missingCodeError()
 		}
 		title, _ := cmd.Flags().GetString("title")
 		ends, _ := cmd.Flags().GetString("ends")
@@ -212,10 +210,14 @@ var competitionAddParticipantsCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Example: `  wom competition add-participants 12345 --players "Doe Matic,Uka36" --verification-code "123-456-789"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		code, _ := cmd.Flags().GetString("verification-code")
+		codeFlag, _ := cmd.Flags().GetString("verification-code")
+		code := resolveSecret(codeFlag, envVerificationCode)
 		playersStr, _ := cmd.Flags().GetString("players")
-		if code == "" || playersStr == "" {
-			return fmt.Errorf("--verification-code and --players are required")
+		if code == "" {
+			return missingCodeError()
+		}
+		if playersStr == "" {
+			return fmt.Errorf("--players is required")
 		}
 		players := strings.Split(playersStr, ",")
 		for i := range players {
@@ -244,10 +246,14 @@ var competitionRemoveParticipantsCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Example: `  wom competition remove-participants 12345 --players "BadPlayer" --verification-code "123-456-789"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		code, _ := cmd.Flags().GetString("verification-code")
+		codeFlag, _ := cmd.Flags().GetString("verification-code")
+		code := resolveSecret(codeFlag, envVerificationCode)
 		playersStr, _ := cmd.Flags().GetString("players")
-		if code == "" || playersStr == "" {
-			return fmt.Errorf("--verification-code and --players are required")
+		if code == "" {
+			return missingCodeError()
+		}
+		if playersStr == "" {
+			return fmt.Errorf("--players is required")
 		}
 		players := strings.Split(playersStr, ",")
 		for i := range players {
@@ -276,9 +282,10 @@ var competitionUpdateAllCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	Example: `  wom competition update-all 12345 --verification-code "123-456-789"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		code, _ := cmd.Flags().GetString("verification-code")
+		codeFlag, _ := cmd.Flags().GetString("verification-code")
+		code := resolveSecret(codeFlag, envVerificationCode)
 		if code == "" {
-			return fmt.Errorf("--verification-code is required")
+			return missingCodeError()
 		}
 
 		client := api.NewClient()
@@ -304,23 +311,23 @@ func init() {
 	competitionCreateCmd.Flags().String("ends", "", "End time ISO 8601 (required)")
 	competitionCreateCmd.Flags().String("participants", "", "Comma-separated participant usernames (classic competition)")
 	competitionCreateCmd.Flags().StringArray("team", nil, "A team, as 'Name=player1,player2'. Repeat for each team. Makes it a team competition, so it cannot be combined with --participants")
-	competitionCreateCmd.Flags().String("group-id", "", "Group ID (for group competitions)")
-	competitionCreateCmd.Flags().String("verification-code", "", "Group verification code (for group competitions)")
+	competitionCreateCmd.Flags().String("group-id", "", groupIDFlagHelp)
+	competitionCreateCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
 	competitionEditCmd.Flags().String("title", "", "New title")
 	competitionEditCmd.Flags().String("ends", "", "New end time ISO 8601")
 	competitionEditCmd.Flags().String("participants", "", "Replace participant list (comma-separated)")
-	competitionEditCmd.Flags().String("verification-code", "", "Verification code (required)")
+	competitionEditCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
 	competitionAddParticipantsCmd.Flags().String("players", "", "Comma-separated usernames to add (required)")
-	competitionAddParticipantsCmd.Flags().String("verification-code", "", "Verification code (required)")
+	competitionAddParticipantsCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
 	competitionRemoveParticipantsCmd.Flags().String("players", "", "Comma-separated usernames to remove (required)")
-	competitionRemoveParticipantsCmd.Flags().String("verification-code", "", "Verification code (required)")
+	competitionRemoveParticipantsCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
-	competitionUpdateAllCmd.Flags().String("verification-code", "", "Verification code (required)")
+	competitionUpdateAllCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
-	competitionDeleteCmd.Flags().String("verification-code", "", "Verification code (required)")
+	competitionDeleteCmd.Flags().String("verification-code", "", verificationCodeFlagHelp)
 
 	competitionCmd.AddCommand(competitionCreateCmd)
 	competitionCmd.AddCommand(competitionViewCmd)
@@ -381,4 +388,48 @@ func parseTeams(specs []string) ([]api.TeamSpec, error) {
 	}
 
 	return teams, nil
+}
+
+// renderCreateOutput writes what `competition create` says about a
+// competition that was just made.
+//
+// WOM's create response echoes a `verificationCode`. Which of the two codes
+// that is decides whether it may be printed:
+//
+//   - A standalone competition mints its own, and this response is the only
+//     place it is ever shown. Swallowing it would lose the only thing that
+//     can later edit or delete the competition.
+//   - A group competition's response echoes the code the caller just
+//     supplied. Printing that copies a long-lived group secret into stdout,
+//     and from there into a shell transcript or an agent's tool log, in
+//     exchange for telling the caller something they already know.
+//
+// `suppliedCode` is how the two are told apart: non-empty means the caller
+// brought their own. The check covers the `--json` path as well as the
+// human one, because the JSON path is the one an agent reads.
+func renderCreateOutput(w io.Writer, data map[string]interface{}, title, metric, starts, ends, suppliedCode string, asJSON bool) error {
+	if suppliedCode != "" {
+		delete(data, "verificationCode")
+	}
+
+	if asJSON {
+		out, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, string(out))
+		return nil
+	}
+
+	if comp, ok := data["competition"].(map[string]interface{}); ok {
+		id, _ := comp["id"].(float64)
+		fmt.Fprintf(w, "Competition '%s' created! (ID: %.0f)\n", title, id)
+		fmt.Fprintf(w, "Metric: %s\n", metric)
+		fmt.Fprintf(w, "Starts: %s\n", starts)
+		fmt.Fprintf(w, "Ends: %s\n", ends)
+	}
+	if code, ok := data["verificationCode"].(string); ok {
+		fmt.Fprintf(w, "Verification code: %s (save this, it is what edits or deletes the competition)\n", code)
+	}
+	return nil
 }
