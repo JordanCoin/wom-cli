@@ -28,6 +28,7 @@ exec_skill({"skill": "wom", "args": "player update 'Doe Matic'"})
 
 - `lookup` — combat level, total XP, total level, top bosses, EHP/EHB
 - `gains` — XP and KC gains over a period (day, week, month, year)
+- `gains` refreshes the player on WOM first. WOM only snapshots a player when asked, so the output may open with a note like "gain since the last snapshot on 2026-10-11" or "tracking starts now". Relay that note as-is. An empty gains list never means the player is untracked; `lookup` shows whether they exist.
 - `--metric` filters gains to a specific skill or boss
 - `update` triggers a fresh stat pull from OSRS hiscores
 

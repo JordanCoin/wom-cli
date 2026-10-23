@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/JordanCoin/wom-cli/internal/api"
 	"github.com/spf13/cobra"
@@ -104,19 +105,44 @@ var playerGainsCmd = &cobra.Command{
 		period, _ := cmd.Flags().GetString("period")
 		metric, _ := cmd.Flags().GetString("metric")
 		client := api.NewClient()
+		// WOM only snapshots a player when something asks it to, so a
+		// quiet account has no data points inside the period. Refresh
+		// first; WOM refuses a refresh inside its cooldown, which is fine.
+		_, _ = client.UpdatePlayer(args[0])
 		data, err := client.GetPlayerGains(args[0], period)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(3)
 		}
+		note := ""
+		if windowStartsLate(data, period) {
+			if since, ok := lastSnapshotBefore(client, args[0], period); ok {
+				data, err = client.GetPlayerGainsBetween(args[0], since, time.Now().UTC().Format(time.RFC3339))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+					os.Exit(3)
+				}
+				note = fmt.Sprintf("Fewer than two WOM snapshots this %s, so this is the gain since the last snapshot on %s.", period, since[:10])
+			} else if start, _ := data["startsAt"].(string); start == "" || start == data["endsAt"] {
+				note = "WOM has no earlier snapshot for this player; tracking starts now, ask again after they play."
+			} else {
+				note = fmt.Sprintf("WOM's first snapshot this %s is from %s, so the gain is counted from there.", period, start[:10])
+			}
+		}
 
 		if jsonOutput {
+			if note != "" {
+				data["note"] = note
+			}
 			out, _ := json.MarshalIndent(data, "", "  ")
 			fmt.Println(string(out))
 			return nil
 		}
 
 		fmt.Printf("Gains for %s (%s):\n", args[0], period)
+		if note != "" {
+			fmt.Println(note)
+		}
 		if gainsData, ok := data["data"].(map[string]interface{}); ok {
 			// Normalize metric for matching (lowercase, underscores)
 			metricNorm := strings.ToLower(strings.ReplaceAll(metric, " ", "_"))
@@ -424,4 +450,51 @@ func formatBossName(name string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+// windowStartsLate is true when WOM's window does not cover the period:
+// no snapshot inside it, or the first one lands more than a day after the
+// period began (a quiet account whose only recent snapshot is today's).
+func windowStartsLate(gains map[string]interface{}, period string) bool {
+	days, ok := periodDays[period]
+	if !ok {
+		return false
+	}
+	start, _ := gains["startsAt"].(string)
+	t, err := time.Parse(time.RFC3339Nano, start)
+	if err != nil {
+		return true
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	return t.After(cutoff.Add(24 * time.Hour))
+}
+
+var periodDays = map[string]int{"day": 1, "week": 7, "month": 30, "year": 365}
+
+// lastSnapshotBefore returns the createdAt of the newest snapshot older than
+// the period, one second earlier so WOM's inclusive startDate picks it up.
+func lastSnapshotBefore(client *api.Client, username, period string) (string, bool) {
+	days, ok := periodDays[period]
+	if !ok {
+		return "", false
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days)
+	snaps, err := client.GetPlayerSnapshots(username, "year")
+	if err != nil {
+		return "", false
+	}
+	return snapshotBefore(snaps, cutoff)
+}
+
+func snapshotBefore(snaps []interface{}, cutoff time.Time) (string, bool) {
+	for _, s := range snaps { // newest first
+		m, _ := s.(map[string]interface{})
+		raw, _ := m["createdAt"].(string)
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil || !t.Before(cutoff) {
+			continue
+		}
+		return t.Add(-time.Second).UTC().Format(time.RFC3339), true
+	}
+	return "", false
 }

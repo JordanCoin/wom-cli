@@ -45,6 +45,20 @@ func (c *Client) GetPlayerGains(username, period string) (map[string]interface{}
 	return c.getMap("/players/" + url.PathEscape(username) + "/gained?period=" + period)
 }
 
+// GetPlayerGainsBetween fetches gains between two instants (RFC3339). WOM
+// uses the first snapshot at or after start and the last at or before end.
+func (c *Client) GetPlayerGainsBetween(username, start, end string) (map[string]interface{}, error) {
+	params := url.Values{}
+	params.Set("startDate", start)
+	params.Set("endDate", end)
+	return c.getMap("/players/" + url.PathEscape(username) + "/gained?" + params.Encode())
+}
+
+// GetPlayerSnapshots lists a player's snapshots over a period, newest first.
+func (c *Client) GetPlayerSnapshots(username, period string) ([]interface{}, error) {
+	return c.getArray("/players/" + url.PathEscape(username) + "/snapshots?period=" + period)
+}
+
 // GetPlayerAchievements fetches achievements for a player.
 func (c *Client) GetPlayerAchievements(username string) ([]interface{}, error) {
 	return c.getArray("/players/" + url.PathEscape(username) + "/achievements")
