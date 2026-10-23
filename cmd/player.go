@@ -116,7 +116,10 @@ var playerGainsCmd = &cobra.Command{
 		}
 		note := ""
 		if windowStartsLate(data, period) {
-			if since, ok := lastSnapshotBefore(client, args[0], period); ok {
+			since, ok, lookupErr := lastSnapshotBefore(client, args[0], period)
+			if lookupErr != nil {
+				note = fmt.Sprintf("Could not check WOM's earlier snapshots (%s), so these numbers may cover only the newest snapshot, not the whole %s.", lookupErr, period)
+			} else if ok {
 				data, err = client.GetPlayerGainsBetween(args[0], since, time.Now().UTC().Format(time.RFC3339))
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %s\n", err)
@@ -473,17 +476,18 @@ var periodDays = map[string]int{"day": 1, "week": 7, "month": 30, "year": 365}
 
 // lastSnapshotBefore returns the createdAt of the newest snapshot older than
 // the period, one second earlier so WOM's inclusive startDate picks it up.
-func lastSnapshotBefore(client *api.Client, username, period string) (string, bool) {
+func lastSnapshotBefore(client *api.Client, username, period string) (string, bool, error) {
 	days, ok := periodDays[period]
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -days)
 	snaps, err := client.GetPlayerSnapshots(username, "year")
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
-	return snapshotBefore(snaps, cutoff)
+	since, found := snapshotBefore(snaps, cutoff)
+	return since, found, nil
 }
 
 func snapshotBefore(snaps []interface{}, cutoff time.Time) (string, bool) {
